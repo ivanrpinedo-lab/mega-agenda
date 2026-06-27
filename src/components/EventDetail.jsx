@@ -1,13 +1,16 @@
 import { useState } from 'react'
 import { Modal, Btn, NoteCard, CountdownChip, FormGroup, Input, Textarea } from './UI'
 import { daysUntil, countdownInfo, TYPE_META, fmtAmount, formatDate, buildWAMessage } from '../utils/helpers'
+import { triggerWAManual, insertWALog } from '../lib/db'
+import { uid } from '../store/useStore'
 
-export function EventDetail({ event, open, onClose, onComplete, onReprogram, onDelete, onEdit, onAddNote, config }) {
+export function EventDetail({ event, open, onClose, onComplete, onReprogram, onDelete, onEdit, onAddNote, config, onToast }) {
   const [showReprog, setShowReprog] = useState(false)
-  const [newDate, setNewDate] = useState('')
-  const [newNote, setNewNote] = useState('')
-  const [showNote, setShowNote] = useState(false)
-  const [noteText, setNoteText] = useState('')
+  const [newDate, setNewDate]       = useState('')
+  const [newNote, setNewNote]       = useState('')
+  const [showNote, setShowNote]     = useState(false)
+  const [noteText, setNoteText]     = useState('')
+  const [sendingWA, setSendingWA]   = useState(false)
 
   if (!event) return null
 
@@ -18,32 +21,42 @@ export function EventDetail({ event, open, onClose, onComplete, onReprogram, onD
   const handleReprogram = () => {
     if (!newDate) return
     onReprogram(event.id, newDate, newNote)
-    setShowReprog(false)
-    setNewDate('')
-    setNewNote('')
+    setShowReprog(false); setNewDate(''); setNewNote('')
     onClose()
   }
 
   const handleNote = () => {
     if (!noteText.trim()) return
     onAddNote(event.id, noteText)
-    setNoteText('')
-    setShowNote(false)
+    setNoteText(''); setShowNote(false)
   }
 
-  const handleWA = () => {
+  const handleWA = async () => {
+    if (!event.phone) return
     const msg = buildWAMessage(
       `Hola {{nombre}}, le recordamos: *{{concepto}}* con fecha {{fecha_venc}}${event.amount ? ' por *{{moneda}}{{monto}}*' : ''}. Coordine con nosotros. — {{empresa}}`,
-      event,
-      config?.empresa || 'Mega Sostenible SAC'
+      event, config?.empresa || 'Mega Sostenible SAC'
     )
-    const phone = event.phone.replace(/\D/g, '')
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank')
+    setSendingWA(true)
+    try {
+      const ok = await triggerWAManual(event.id, event.phone, msg)
+      if (ok) {
+        await insertWALog({ id: uid(), event_id: event.id, phone: event.phone, message: msg, status: 'sent' })
+        onToast?.('📱 Mensaje enviado via YCloud')
+      } else {
+        // Fallback: open WhatsApp web
+        window.open(`https://wa.me/${event.phone.replace(/\D/g,'')}?text=${encodeURIComponent(msg)}`, '_blank')
+        onToast?.('📱 Abriendo WhatsApp (n8n no disponible)')
+      }
+    } catch {
+      window.open(`https://wa.me/${event.phone.replace(/\D/g,'')}?text=${encodeURIComponent(msg)}`, '_blank')
+    } finally {
+      setSendingWA(false)
+    }
   }
 
   return (
     <Modal open={open} onClose={() => { setShowReprog(false); setShowNote(false); onClose() }}>
-      {/* Header */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 16 }}>
         <div style={{ fontSize: 32 }}>{meta.emoji}</div>
         <div style={{ flex: 1 }}>
@@ -53,7 +66,6 @@ export function EventDetail({ event, open, onClose, onComplete, onReprogram, onD
         <CountdownChip cls={cd.cls} text={cd.text} />
       </div>
 
-      {/* Details */}
       {[
         { label: 'Fecha y hora', value: `${formatDate(event.date)} ${event.time}` },
         event.amount > 0 ? { label: 'Monto', value: fmtAmount(event), big: true, color: meta.color } : null,
@@ -67,24 +79,19 @@ export function EventDetail({ event, open, onClose, onComplete, onReprogram, onD
         </div>
       ))}
 
-      {/* Notes */}
       {event.notes && (
         <div style={{ margin: '12px 0', padding: 12, background: '#FFFDE7', borderRadius: 10, borderLeft: '3px solid var(--amber)', fontSize: 13 }}>
           📝 {event.notes}
         </div>
       )}
 
-      {/* History */}
       {event.history?.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--text-mid)', marginBottom: 8 }}>Historial</div>
-          {event.history.map((h, i) => (
-            <NoteCard key={i} date={h.date} action={h.action} note={h.note} />
-          ))}
+          {event.history.map((h, i) => <NoteCard key={i} date={h.date} action={h.action} note={h.note} />)}
         </div>
       )}
 
-      {/* Reprogram form */}
       {showReprog && (
         <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 14, marginTop: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📅 Reprogramar evento</div>
@@ -101,7 +108,6 @@ export function EventDetail({ event, open, onClose, onComplete, onReprogram, onD
         </div>
       )}
 
-      {/* Add note form */}
       {showNote && (
         <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 14, marginTop: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📝 Agregar nota</div>
@@ -113,13 +119,14 @@ export function EventDetail({ event, open, onClose, onComplete, onReprogram, onD
         </div>
       )}
 
-      {/* Actions */}
       <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
         {event.status !== 'completed' && (
           <Btn variant="primary" size="sm" onClick={() => { onComplete(event.id); onClose() }}>✓ Completar</Btn>
         )}
         {event.phone && (
-          <Btn variant="whatsapp" size="sm" onClick={handleWA}>📱 WhatsApp</Btn>
+          <Btn variant="whatsapp" size="sm" onClick={handleWA} disabled={sendingWA}>
+            {sendingWA ? '⏳…' : '📱 WA YCloud'}
+          </Btn>
         )}
         <Btn variant="amber" size="sm" onClick={() => { setShowReprog(!showReprog); setShowNote(false) }}>📅 Reprogramar</Btn>
         <Btn variant="ghost" size="sm" onClick={() => { setShowNote(!showNote); setShowReprog(false) }}>📝 Nota</Btn>
